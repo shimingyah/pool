@@ -17,10 +17,9 @@ package pool
 import (
 	"errors"
 	"fmt"
+	"math"
 	"sync"
-	"time"
-
-	"google.golang.org/grpc"
+	"sync/atomic"
 )
 
 // ErrClosed is the error resulting if the pool is closed via pool.Close().
@@ -32,132 +31,163 @@ type Pool interface {
 	// Get returns a new connection from the pool. Closing the connections puts
 	// it back to the Pool. Closing it when the pool is destroyed or full will
 	// be counted as an error.
-	Get() (*grpc.ClientConn, error)
+	Get() (Conn, error)
 
 	// Close closes the pool and all its connections. After Close() the pool is
 	// no longer usable.
 	Close() error
 
-	// Len returns the current number of connections of the pool.
-	Len() int
-}
-
-// Options are params for creating connect pool.
-type Options struct {
-	// Dial is an application supplied function for creating and configuring a connection.
-	Dial func() (*grpc.ClientConn, error)
-
-	// Close the connect instead of put it back to pool.
-	Close func(*grpc.ClientConn) error
-
-	// Ping is an optional param for checking the health of idle connection
-	Ping func(*grpc.ClientConn) error
-
-	// Maximum number of idle connections in the pool.
-	MaxIdle int
-
-	// Maximum number of connections allocated by the pool at a given time.
-	// When zero, there is no limit on the number of connections in the pool.
-	MaxActive int
-
-	// Close connections after remaining idle for this duration. If the value
-	// is zero, then idle connections are not closed. Applications should set
-	// the timeout to a value less than the server's timeout.
-	IdleTimeout time.Duration
-
-	// If Wait is true and the pool is at the MaxActive limit, then Get() waits
-	// for a connection to be returned to the pool before returning.
-	Wait bool
+	// String returns the current status of the pool.
+	String() string
 }
 
 type pool struct {
-	maxIdle     int
-	maxActive   int
-	wait        bool
-	idleTimeout time.Duration
-	conns       chan Conn
-	dial        func() (*grpc.ClientConn, error)
-	close       func(*grpc.ClientConn) error
-	ping        func(*grpc.ClientConn) error
+	// atomic, used to get connection random
+	index uint32
+
+	// atomic, the current physical connection of pool
+	current int32
+
+	// atomic, the using logic connection of pool
+	// logic connection = physical connection * MaxConcurrentStreams
+	ref int32
+
+	// pool options
+	opt Options
+
+	// all of created physical connections
+	conns []*conn
+
+	// the server address is to create connection.
+	address string
+
 	sync.RWMutex
 }
 
 // New return a connection pool.
-func New(option Options) (Pool, error) {
-	if option.MaxIdle < 0 || option.MaxActive <= 0 || option.MaxIdle > option.MaxActive {
-		return nil, errors.New("invalid maximum settings")
+func New(address string, option Options) (Pool, error) {
+	if address == "" {
+		return nil, errors.New("invalid address settings")
 	}
 	if option.Dial == nil {
 		return nil, errors.New("invalid dial settings")
 	}
-	if option.Close == nil {
-		return nil, errors.New("invalid close settings")
+	if option.MaxIdle < 0 || option.MaxActive <= 0 || option.MaxIdle > option.MaxActive {
+		return nil, errors.New("invalid maximum settings")
+	}
+	if option.MaxConcurrentStreams <= 0 {
+		return nil, errors.New("invalid maximun settings")
 	}
 
 	p := &pool{
-		maxIdle:     option.MaxIdle,
-		maxActive:   option.MaxActive,
-		wait:        option.Wait,
-		idleTimeout: option.IdleTimeout,
-		dial:        option.Dial,
-		close:       option.Close,
-		ping:        option.Ping,
-		conns:       make(chan Conn, option.MaxActive),
+		index:   0,
+		current: int32(option.MaxIdle),
+		ref:     0,
+		opt:     option,
+		conns:   make([]*conn, option.MaxActive),
+		address: address,
 	}
 
-	for i := 0; i < p.maxIdle; i++ {
-		c, err := p.dial()
+	for i := 0; i < p.opt.MaxIdle; i++ {
+		c, err := p.opt.Dial(address)
 		if err != nil {
 			p.Close()
 			return nil, fmt.Errorf("dial is not able to fill the pool: %s", err)
 		}
-		p.conns <- p.wrapConn(c)
+		p.conns[i] = p.wrapConn(c)
 	}
 
 	return p, nil
 }
 
-// put puts the connection back to the pool. If the pool is full or closed,
-// conn is simply closed. A nil conn will be rejected.
-func (p *pool) put(c *Conn) error {
-	if c == nil {
-		return errors.New("connection is nil. rejecting")
+func (p *pool) incrRef() int32 {
+	newRef := atomic.AddInt32(&p.ref, 1)
+	if newRef == math.MaxInt32 {
+		panic(fmt.Sprintf("overflow ref: %d", newRef))
 	}
-	if p.conns == nil {
-		return p.close(c.ClientConn)
-	}
+	return newRef
+}
 
-	select {
-	case p.conns <- c:
-		return nil
-	default:
-		return p.close(c.ClientConn)
+func (p *pool) decrRef() {
+	newRef := atomic.AddInt32(&p.ref, -1)
+	if newRef < 0 {
+		panic(fmt.Sprintf("negative ref: %d", newRef))
+	}
+	if newRef == 0 && atomic.LoadInt32(&p.current) > int32(p.opt.MaxIdle) {
+		p.Lock()
+		if atomic.LoadInt32(&p.ref) == 0 {
+			atomic.StoreInt32(&p.current, int32(p.opt.MaxIdle))
+			p.deleteFrom(p.opt.MaxIdle)
+		}
+		p.Unlock()
+	}
+}
+
+func (p *pool) deleteFrom(begin int) {
+	for i := begin; i < p.opt.MaxActive; i++ {
+		conn := p.conns[i]
+		if conn == nil {
+			break
+		}
+		p.conns[i] = nil
+		if cc := conn.Value(); cc != nil {
+			_ = cc.Close()
+		}
 	}
 }
 
 // Get see Pool interface.
-func (p *pool) Get() (*grpc.ClientConn, error) {
-	for {
-		select {
-		case c := <-p.conns:
-			if c == nil {
-				return nil, ErrClosed
-			}
-			if timeout := p.idleTimeout; timeout > 0 {
-				if c.createAt.Add(timeout).Before(time.Now()) {
-				}
-			}
-		}
+func (p *pool) Get() (Conn, error) {
+	// first select from the created connection
+	nextRef := p.incrRef()
+	p.RLock()
+	current := atomic.LoadInt32(&p.current)
+	p.RUnlock()
+	limit := current * int32(p.opt.MaxConcurrentStreams)
+	if nextRef < limit {
+		next := atomic.AddUint32(&p.index, 1) % uint32(current)
+		return p.conns[next], nil
 	}
-	return nil, nil
+
+	// second create new connections
+	if current < int32(p.opt.MaxActive) {
+		increment := current
+		if current+increment > int32(p.opt.MaxActive) {
+			increment = int32(p.opt.MaxActive) - current
+		}
+		for i := current; i < current+increment; i++ {
+			c, err := p.opt.Dial(p.address)
+			if err != nil {
+				return nil, err
+			}
+			p.conns[i] = p.wrapConn(c)
+		}
+		atomic.StoreInt32(&p.current, current+increment)
+		next := atomic.AddUint32(&p.index, 1) % uint32(current+increment)
+		return p.conns[next], nil
+	}
+
+	// third check wait
+	if p.opt.Wait {
+		next := atomic.AddUint32(&p.index, 1) % uint32(atomic.LoadInt32(&p.current))
+		return p.conns[next], nil
+	}
+
+	// fourth create new connection
+	c, err := p.opt.Dial(p.address)
+	return p.wrapConn(c), err
 }
 
 // Close see Pool interface.
 func (p *pool) Close() error {
+	atomic.StoreUint32(&p.index, 0)
+	atomic.StoreInt32(&p.ref, 0)
+	p.deleteFrom(0)
 	return nil
 }
 
-// Len see Pool interface.
-func (p *pool) Len() int {
-	return 0
+// String see Pool interface.
+func (p *pool) String() string {
+	return fmt.Sprintf("address:%s, index:%d, current:%d, ref:%d. option:%v",
+		p.address, p.index, p.current, p.ref, p.opt)
 }
