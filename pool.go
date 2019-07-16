@@ -34,7 +34,8 @@ type Pool interface {
 	Get() (Conn, error)
 
 	// Close closes the pool and all its connections. After Close() the pool is
-	// no longer usable.
+	// no longer usable. You can't make concurrent calls Close and Get method.
+	// It will be cause panic.
 	Close() error
 
 	// String returns the current status of the pool.
@@ -61,6 +62,7 @@ type pool struct {
 	// the server address is to create connection.
 	address string
 
+	// control the atomic var current's concurrent read write.
 	sync.RWMutex
 }
 
@@ -72,7 +74,7 @@ func New(address string, option Options) (Pool, error) {
 	if option.Dial == nil {
 		return nil, errors.New("invalid dial settings")
 	}
-	if option.MaxIdle < 0 || option.MaxActive <= 0 || option.MaxIdle > option.MaxActive {
+	if option.MaxIdle <= 0 || option.MaxActive <= 0 || option.MaxIdle > option.MaxActive {
 		return nil, errors.New("invalid maximum settings")
 	}
 	if option.MaxConcurrentStreams <= 0 {
@@ -94,7 +96,7 @@ func New(address string, option Options) (Pool, error) {
 			p.Close()
 			return nil, fmt.Errorf("dial is not able to fill the pool: %s", err)
 		}
-		p.conns[i] = p.wrapConn(c)
+		p.conns[i] = p.wrapConn(c, false)
 	}
 
 	return p, nil
@@ -123,64 +125,84 @@ func (p *pool) decrRef() {
 	}
 }
 
+func (p *pool) reset(index int) {
+	conn := p.conns[index]
+	if conn == nil {
+		return
+	}
+	conn.reset()
+	p.conns[index] = nil
+}
+
 func (p *pool) deleteFrom(begin int) {
 	for i := begin; i < p.opt.MaxActive; i++ {
-		conn := p.conns[i]
-		if conn == nil {
-			break
-		}
-		p.conns[i] = nil
-		if cc := conn.Value(); cc != nil {
-			_ = cc.Close()
-		}
+		p.reset(i)
 	}
 }
 
 // Get see Pool interface.
 func (p *pool) Get() (Conn, error) {
-	// first select from the created connection
+	// the first selected from the created connections
 	nextRef := p.incrRef()
 	p.RLock()
 	current := atomic.LoadInt32(&p.current)
 	p.RUnlock()
-	limit := current * int32(p.opt.MaxConcurrentStreams)
-	if nextRef < limit {
+	if current == 0 {
+		return nil, ErrClosed
+	}
+	if nextRef <= current*int32(p.opt.MaxConcurrentStreams) {
 		next := atomic.AddUint32(&p.index, 1) % uint32(current)
 		return p.conns[next], nil
 	}
 
-	// second create new connections
-	if current < int32(p.opt.MaxActive) {
+	// the number connection of pool is reach to max active
+	if current == int32(p.opt.MaxActive) {
+		// the second if reuse is true, select from pool's connections
+		if p.opt.Reuse {
+			next := atomic.AddUint32(&p.index, 1) % uint32(current)
+			return p.conns[next], nil
+		}
+		// the third create one-time connection
+		c, err := p.opt.Dial(p.address)
+		return p.wrapConn(c, true), err
+	}
+
+	// the fourth create new connections given back to pool
+	p.Lock()
+	current = atomic.LoadInt32(&p.current)
+	if nextRef > current*int32(p.opt.MaxConcurrentStreams) {
+		// 2 times the incremental or the remain incremental
 		increment := current
 		if current+increment > int32(p.opt.MaxActive) {
 			increment = int32(p.opt.MaxActive) - current
 		}
-		for i := current; i < current+increment; i++ {
-			c, err := p.opt.Dial(p.address)
-			if err != nil {
-				return nil, err
+		var i int32
+		var err error
+		for i = 0; i < increment; i++ {
+			c, er := p.opt.Dial(p.address)
+			if er != nil {
+				err = er
+				break
 			}
-			p.conns[i] = p.wrapConn(c)
+			p.reset(int(current + i))
+			p.conns[current+i] = p.wrapConn(c, false)
 		}
-		atomic.StoreInt32(&p.current, current+increment)
-		next := atomic.AddUint32(&p.index, 1) % uint32(current+increment)
-		return p.conns[next], nil
+		current += i
+		atomic.StoreInt32(&p.current, current+i)
+		if err != nil {
+			p.Unlock()
+			return nil, err
+		}
 	}
-
-	// third check wait
-	if p.opt.Wait {
-		next := atomic.AddUint32(&p.index, 1) % uint32(atomic.LoadInt32(&p.current))
-		return p.conns[next], nil
-	}
-
-	// fourth create new connection
-	c, err := p.opt.Dial(p.address)
-	return p.wrapConn(c), err
+	p.Unlock()
+	next := atomic.AddUint32(&p.index, 1) % uint32(current)
+	return p.conns[next], nil
 }
 
 // Close see Pool interface.
 func (p *pool) Close() error {
 	atomic.StoreUint32(&p.index, 0)
+	atomic.StoreInt32(&p.current, 0)
 	atomic.StoreInt32(&p.ref, 0)
 	p.deleteFrom(0)
 	return nil

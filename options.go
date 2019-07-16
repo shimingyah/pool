@@ -68,9 +68,10 @@ type Options struct {
 	// MaxConcurrentStreams limit on the number of concurrent streams to each single connection
 	MaxConcurrentStreams int
 
-	// If Wait is true and the pool is at the MaxActive limit, then Get() waits
-	// for a connection to be returned to the pool before returning.
-	Wait bool
+	// If Reuse is true and the pool is at the MaxActive limit, then Get() reuse
+	// the connection to return, If Reuse is false and the pool is at the MaxActive limit,
+	// create a one-time connection to return.
+	Reuse bool
 }
 
 // DefaultOptions sets a list of recommended options for good performance.
@@ -80,7 +81,7 @@ var DefaultOptions = Options{
 	MaxIdle:              8,
 	MaxActive:            64,
 	MaxConcurrentStreams: 100,
-	Wait:                 true,
+	Reuse:                true,
 }
 
 // Dial return a grpc connection with defined configurations.
