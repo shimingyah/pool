@@ -38,8 +38,8 @@ type Pool interface {
 	// It will be cause panic.
 	Close() error
 
-	// String returns the current status of the pool.
-	String() string
+	// Status returns the current status of the pool.
+	Status() string
 }
 
 type pool struct {
@@ -188,7 +188,7 @@ func (p *pool) Get() (Conn, error) {
 			p.conns[current+i] = p.wrapConn(c, false)
 		}
 		current += i
-		atomic.StoreInt32(&p.current, current+i)
+		atomic.StoreInt32(&p.current, current)
 		if err != nil {
 			p.Unlock()
 			return nil, err
@@ -208,8 +208,8 @@ func (p *pool) Close() error {
 	return nil
 }
 
-// String see Pool interface.
-func (p *pool) String() string {
+// Status see Pool interface.
+func (p *pool) Status() string {
 	return fmt.Sprintf("address:%s, index:%d, current:%d, ref:%d. option:%v",
 		p.address, p.index, p.current, p.ref, p.opt)
 }
