@@ -16,6 +16,8 @@ package pool
 
 import (
 	"flag"
+	"sync"
+	"sync/atomic"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -23,37 +25,55 @@ import (
 
 var endpoint = flag.String("endpoint", "127.0.0.1:8080", "grpc server endpoint")
 
+func newPool(op *Options) (Pool, *pool, Options, error) {
+	opt := DefaultOptions
+	opt.Dial = DialTest
+	if op != nil {
+		opt = *op
+	}
+	p, err := New(*endpoint, opt)
+	return p, p.(*pool), opt, err
+}
+
 func TestNew(t *testing.T) {
-	p, err := New(*endpoint, DefaultOptions)
+	p, nativePool, opt, err := newPool(nil)
 	require.NoError(t, err)
 	defer p.Close()
 
-	nativePool := p.(*pool)
 	require.EqualValues(t, 0, nativePool.index)
 	require.EqualValues(t, 0, nativePool.ref)
-	require.EqualValues(t, DefaultOptions.MaxIdle, nativePool.current)
-	require.EqualValues(t, DefaultOptions.MaxActive, len(nativePool.conns))
+	require.EqualValues(t, opt.MaxIdle, nativePool.current)
+	require.EqualValues(t, opt.MaxActive, len(nativePool.conns))
+}
+
+func TestClose(t *testing.T) {
+	p, nativePool, opt, err := newPool(nil)
+	require.NoError(t, err)
+	p.Close()
+
+	require.EqualValues(t, 0, nativePool.index)
+	require.EqualValues(t, 0, nativePool.ref)
+	require.EqualValues(t, 0, nativePool.current)
+	require.EqualValues(t, true, nativePool.conns[0] == nil)
+	require.EqualValues(t, true, nativePool.conns[opt.MaxIdle-1] == nil)
 }
 
 func TestReset(t *testing.T) {
-	p, err := New(*endpoint, DefaultOptions)
+	p, nativePool, opt, err := newPool(nil)
 	require.NoError(t, err)
 	defer p.Close()
-
-	nativePool := p.(*pool)
 
 	nativePool.reset(0)
 	require.EqualValues(t, true, nativePool.conns[0] == nil)
-	nativePool.reset(DefaultOptions.MaxIdle + 1)
-	require.EqualValues(t, true, nativePool.conns[DefaultOptions.MaxIdle+1] == nil)
+	nativePool.reset(opt.MaxIdle + 1)
+	require.EqualValues(t, true, nativePool.conns[opt.MaxIdle+1] == nil)
 }
 
 func TestBasicGet(t *testing.T) {
-	p, err := New(*endpoint, DefaultOptions)
+	p, nativePool, _, err := newPool(nil)
 	require.NoError(t, err)
 	defer p.Close()
 
-	nativePool := p.(*pool)
 	conn, err := p.Get()
 	require.NoError(t, err)
 
@@ -66,11 +86,109 @@ func TestBasicGet(t *testing.T) {
 	require.EqualValues(t, 0, nativePool.ref)
 }
 
-func TestConcurrentGet(t *testing.T) {
-	p, err := New(*endpoint, DefaultOptions)
+func TestBasicGet2(t *testing.T) {
+	opt := DefaultOptions
+	opt.Dial = DialTest
+	opt.MaxIdle = 1
+	opt.MaxActive = 2
+	opt.MaxConcurrentStreams = 2
+	opt.Reuse = true
+
+	p, nativePool, _, err := newPool(&opt)
 	require.NoError(t, err)
 	defer p.Close()
 
-	nativePool := p.(*pool)
-	t.Log(nativePool)
+	conn1, err := p.Get()
+	require.NoError(t, err)
+	defer conn1.Close()
+
+	conn2, err := p.Get()
+	require.NoError(t, err)
+	defer conn2.Close()
+
+	require.EqualValues(t, 2, nativePool.index)
+	require.EqualValues(t, 2, nativePool.ref)
+	require.EqualValues(t, 1, nativePool.current)
+
+	// create new connections push back to pool
+	conn3, err := p.Get()
+	require.NoError(t, err)
+	defer conn3.Close()
+
+	require.EqualValues(t, 3, nativePool.index)
+	require.EqualValues(t, 3, nativePool.ref)
+	require.EqualValues(t, 2, nativePool.current)
+
+	conn4, err := p.Get()
+	require.NoError(t, err)
+	defer conn4.Close()
+
+	// reuse exists connections
+	conn5, err := p.Get()
+	require.NoError(t, err)
+	defer conn5.Close()
+
+	nativeConn := conn5.(*conn)
+	require.EqualValues(t, false, nativeConn.once)
+}
+
+func TestBasicGet3(t *testing.T) {
+	opt := DefaultOptions
+	opt.Dial = DialTest
+	opt.MaxIdle = 1
+	opt.MaxActive = 1
+	opt.MaxConcurrentStreams = 1
+	opt.Reuse = false
+
+	p, _, _, err := newPool(&opt)
+	require.NoError(t, err)
+	defer p.Close()
+
+	conn1, err := p.Get()
+	require.NoError(t, err)
+	defer conn1.Close()
+
+	// create new connections doesn't push back to pool
+	conn2, err := p.Get()
+	require.NoError(t, err)
+	defer conn2.Close()
+
+	nativeConn := conn2.(*conn)
+	require.EqualValues(t, true, nativeConn.once)
+}
+
+func TestConcurrentGet(t *testing.T) {
+	opt := DefaultOptions
+	opt.Dial = DialTest
+	opt.MaxIdle = 8
+	opt.MaxActive = 64
+	opt.MaxConcurrentStreams = 2
+	opt.Reuse = false
+
+	p, nativePool, _, err := newPool(&opt)
+	require.NoError(t, err)
+	defer p.Close()
+
+	var wg sync.WaitGroup
+	wg.Add(500)
+
+	for i := 0; i < 500; i++ {
+		go func(i int) {
+			conn, err := p.Get()
+			require.NoError(t, err)
+			require.EqualValues(t, true, conn != nil)
+			conn.Close()
+			wg.Done()
+			t.Logf("goroutine: %v, index: %v, ref: %v, current: %v", i,
+				atomic.LoadUint32(&nativePool.index),
+				atomic.LoadInt32(&nativePool.ref),
+				atomic.LoadInt32(&nativePool.current))
+		}(i)
+	}
+	wg.Wait()
+
+	require.EqualValues(t, 0, nativePool.ref)
+	require.EqualValues(t, opt.MaxIdle, nativePool.current)
+	require.EqualValues(t, true, nativePool.conns[0] != nil)
+	require.EqualValues(t, true, nativePool.conns[opt.MaxIdle] == nil)
 }

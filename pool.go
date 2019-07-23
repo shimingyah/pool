@@ -17,6 +17,7 @@ package pool
 import (
 	"errors"
 	"fmt"
+	"log"
 	"math"
 	"sync"
 	"sync/atomic"
@@ -98,6 +99,7 @@ func New(address string, option Options) (Pool, error) {
 		}
 		p.conns[i] = p.wrapConn(c, false)
 	}
+	log.Printf("new pool success: %v\n", p.Status())
 
 	return p, nil
 }
@@ -118,6 +120,8 @@ func (p *pool) decrRef() {
 	if newRef == 0 && atomic.LoadInt32(&p.current) > int32(p.opt.MaxIdle) {
 		p.Lock()
 		if atomic.LoadInt32(&p.ref) == 0 {
+			log.Printf("shrink pool: %d ---> %d, decrement: %d, maxActive: %d\n",
+				p.current, p.opt.MaxIdle, p.current-int32(p.opt.MaxIdle), p.opt.MaxActive)
 			atomic.StoreInt32(&p.current, int32(p.opt.MaxIdle))
 			p.deleteFrom(p.opt.MaxIdle)
 		}
@@ -170,7 +174,7 @@ func (p *pool) Get() (Conn, error) {
 	// the fourth create new connections given back to pool
 	p.Lock()
 	current = atomic.LoadInt32(&p.current)
-	if nextRef > current*int32(p.opt.MaxConcurrentStreams) {
+	if current < int32(p.opt.MaxActive) && nextRef > current*int32(p.opt.MaxConcurrentStreams) {
 		// 2 times the incremental or the remain incremental
 		increment := current
 		if current+increment > int32(p.opt.MaxActive) {
@@ -188,6 +192,8 @@ func (p *pool) Get() (Conn, error) {
 			p.conns[current+i] = p.wrapConn(c, false)
 		}
 		current += i
+		log.Printf("grow pool: %d ---> %d, increment: %d, maxActive: %d\n",
+			p.current, current, increment, p.opt.MaxActive)
 		atomic.StoreInt32(&p.current, current)
 		if err != nil {
 			p.Unlock()
@@ -205,6 +211,7 @@ func (p *pool) Close() error {
 	atomic.StoreInt32(&p.current, 0)
 	atomic.StoreInt32(&p.ref, 0)
 	p.deleteFrom(0)
+	log.Printf("close pool success: %v\n", p.Status())
 	return nil
 }
 

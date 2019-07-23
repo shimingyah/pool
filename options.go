@@ -77,7 +77,7 @@ type Options struct {
 // DefaultOptions sets a list of recommended options for good performance.
 // Feel free to modify these to suit your needs.
 var DefaultOptions = Options{
-	Dial:                 DialTest,
+	Dial:                 Dial,
 	MaxIdle:              8,
 	MaxActive:            64,
 	MaxConcurrentStreams: 100,
@@ -101,7 +101,7 @@ func Dial(address string) (*grpc.ClientConn, error) {
 		}))
 }
 
-// DialTest return a grpc connection with defined configurations.
+// DialTest return a simple grpc connection with defined configurations.
 func DialTest(address string) (*grpc.ClientConn, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), DialTimeout)
 	defer cancel()
