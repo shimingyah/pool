@@ -31,7 +31,7 @@ var ErrClosed = errors.New("pool is closed")
 type Pool interface {
 	// Get returns a new connection from the pool. Closing the connections puts
 	// it back to the Pool. Closing it when the pool is destroyed or full will
-	// be counted as an error.
+	// be counted as an error. we guarantee the conn.Value() isn't nil when conn isn't nil.
 	Get() (Conn, error)
 
 	// Close closes the pool and all its connections. After Close() the pool is
