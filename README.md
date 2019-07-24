@@ -1,14 +1,16 @@
-# pool
+# Pool
 
-Connection pool for Go's grpc interface.
+Connection pool for Go's grpc client that supports connection reuse.
 
-# Usage
+# Getting started
+
+## Install
 
 Import package:
 
 ```
 import (
-	"github.com/shimingyah/pool"
+    "github.com/shimingyah/pool"
 )
 ```
 
@@ -16,7 +18,7 @@ import (
 go get github.com/shimingyah/pool
 ```
 
-# example
+# Usage
 
 ```
 p, err := pool.New("127.0.0.1:8080", pool.DefaultOptions)
@@ -34,3 +36,11 @@ defer conn.Close()
 // cc := conn.Value()
 // client := pb.NewClient(conn.Value())
 ```
+
+# Reference
+* [https://github.com/fatih/pool](https://github.com/fatih/pool)
+* [https://github.com/silenceper/pool](https://github.com/silenceper/pool)
+
+# License
+
+Pool is under the Apache 2.0 license. See the [LICENSE](https://github.com/shimingyah/pool/blob/master/LICENSE) file for details.
