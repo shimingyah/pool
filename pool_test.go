@@ -46,6 +46,38 @@ func TestNew(t *testing.T) {
 	require.EqualValues(t, opt.MaxActive, len(nativePool.conns))
 }
 
+func TestNew2(t *testing.T) {
+	opt := DefaultOptions
+
+	_, err := New("", opt)
+	require.Error(t, err)
+
+	opt.Dial = nil
+	_, err = New("127.0.0.1:8080", opt)
+	require.Error(t, err)
+
+	opt = DefaultOptions
+	opt.MaxConcurrentStreams = 0
+	_, err = New("127.0.0.1:8080", opt)
+	require.Error(t, err)
+
+	opt = DefaultOptions
+	opt.MaxIdle = 0
+	_, err = New("127.0.0.1:8080", opt)
+	require.Error(t, err)
+
+	opt = DefaultOptions
+	opt.MaxActive = 0
+	_, err = New("127.0.0.1:8080", opt)
+	require.Error(t, err)
+
+	opt = DefaultOptions
+	opt.MaxIdle = 2
+	opt.MaxActive = 1
+	_, err = New("127.0.0.1:8080", opt)
+	require.Error(t, err)
+}
+
 func TestClose(t *testing.T) {
 	p, nativePool, opt, err := newPool(nil)
 	require.NoError(t, err)
@@ -76,6 +108,7 @@ func TestBasicGet(t *testing.T) {
 
 	conn, err := p.Get()
 	require.NoError(t, err)
+	require.EqualValues(t, true, conn.Value() != nil)
 
 	require.EqualValues(t, 1, nativePool.index)
 	require.EqualValues(t, 1, nativePool.ref)
@@ -84,6 +117,15 @@ func TestBasicGet(t *testing.T) {
 
 	require.EqualValues(t, 1, nativePool.index)
 	require.EqualValues(t, 0, nativePool.ref)
+}
+
+func TestGetAfterClose(t *testing.T) {
+	p, _, _, err := newPool(nil)
+	require.NoError(t, err)
+	p.Close()
+
+	_, err = p.Get()
+	require.EqualError(t, err, "pool is closed")
 }
 
 func TestBasicGet2(t *testing.T) {
