@@ -25,7 +25,7 @@ import (
 	"github.com/shimingyah/pool/example/pb"
 )
 
-var addr = flag.String("addr", "localhost:50000", "the address to connect to")
+var addr = flag.String("addr", "127.0.0.1:50000", "the address to connect to")
 
 func main() {
 	flag.Parse()

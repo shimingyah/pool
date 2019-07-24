@@ -40,7 +40,7 @@ func (s *server) Say(context.Context, *pb.EchoRequest) (*pb.EchoResponse, error)
 func main() {
 	flag.Parse()
 
-	listen, err := net.Listen("tcp", fmt.Sprintf(":%v", *port))
+	listen, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%v", *port))
 	if err != nil {
 		log.Fatalf("failed to listen: %v", err)
 	}

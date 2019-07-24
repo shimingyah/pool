@@ -80,7 +80,7 @@ var DefaultOptions = Options{
 	Dial:                 Dial,
 	MaxIdle:              8,
 	MaxActive:            64,
-	MaxConcurrentStreams: 100,
+	MaxConcurrentStreams: 64,
 	Reuse:                true,
 }
 

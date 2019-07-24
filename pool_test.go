@@ -15,15 +15,18 @@
 package pool
 
 import (
+	"context"
 	"flag"
 	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 
+	"github.com/shimingyah/pool/example/pb"
 	"github.com/stretchr/testify/require"
 )
 
-var endpoint = flag.String("endpoint", "127.0.0.1:8080", "grpc server endpoint")
+var endpoint = flag.String("endpoint", "127.0.0.1:50000", "grpc server endpoint")
 
 func newPool(op *Options) (Pool, *pool, Options, error) {
 	opt := DefaultOptions
@@ -233,4 +236,65 @@ func TestConcurrentGet(t *testing.T) {
 	require.EqualValues(t, opt.MaxIdle, nativePool.current)
 	require.EqualValues(t, true, nativePool.conns[0] != nil)
 	require.EqualValues(t, true, nativePool.conns[opt.MaxIdle] == nil)
+}
+
+var size = 4 * 1024 * 1024
+
+func BenchmarkPoolRPC(b *testing.B) {
+	opt := DefaultOptions
+	p, err := New(*endpoint, opt)
+	if err != nil {
+		b.Fatalf("failed to new pool: %v", err)
+	}
+	defer p.Close()
+
+	testFunc := func() {
+		conn, err := p.Get()
+		if err != nil {
+			b.Fatalf("failed to get conn: %v", err)
+		}
+		defer conn.Close()
+
+		client := pb.NewEchoClient(conn.Value())
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+
+		data := make([]byte, size)
+		_, err = client.Say(ctx, &pb.EchoRequest{Message: data})
+		if err != nil {
+			b.Fatalf("unexpected error from Say: %v", err)
+		}
+	}
+
+	b.ResetTimer()
+	b.RunParallel(func(tpb *testing.PB) {
+		for tpb.Next() {
+			testFunc()
+		}
+	})
+}
+
+func BenchmarkSingleRPC(b *testing.B) {
+	testFunc := func() {
+		cc, err := Dial(*endpoint)
+		if err != nil {
+			b.Fatalf("failed to create grpc conn: %v", err)
+		}
+
+		client := pb.NewEchoClient(cc)
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+
+		data := make([]byte, size)
+		_, err = client.Say(ctx, &pb.EchoRequest{Message: data})
+		if err != nil {
+			b.Fatalf("unexpected error from Say: %v", err)
+		}
+	}
+
+	b.RunParallel(func(tpb *testing.PB) {
+		for tpb.Next() {
+			testFunc()
+		}
+	})
 }
