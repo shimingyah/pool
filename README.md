@@ -46,7 +46,7 @@ defer conn.Close()
 ```
 See the complete example: [https://github.com/shimingyah/pool/tree/master/example](https://github.com/shimingyah/pool/tree/master/example)
 
-# Reference
+# Reference 
 * [https://github.com/fatih/pool](https://github.com/fatih/pool)
 * [https://github.com/silenceper/pool](https://github.com/silenceper/pool)
 
