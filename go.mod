@@ -1,4 +1,4 @@
-module github.com/shimingyah/pool
+module github.com/dk-laosiji/pool
 
 go 1.12
 
