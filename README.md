@@ -1,7 +1,5 @@
 # Pool
-[![GoDoc](https://godoc.org/github.com/shimingyah/pool?status.svg)](https://godoc.org/github.com/shimingyah/pool)
-[![Go Report Card](https://goreportcard.com/badge/github.com/shimingyah/pool?style=flat-square)](https://goreportcard.com/report/github.com/shimingyah/pool)
-[![LICENSE](https://img.shields.io/badge/licence-Apache%202.0-brightgreen.svg?style=flat-square)](https://github.com/shimingyah/pool/blob/master/LICENSE)
+this project is forked from  https://github.com/shimingyah/pool
 
 Connection pool for Go's grpc client that supports connection reuse.
 
@@ -18,12 +16,12 @@ Import package:
 
 ```
 import (
-    "github.com/shimingyah/pool"
+    "github.com/dk-laosiji/pool"
 )
 ```
 
 ```
-go get github.com/shimingyah/pool
+go get github.com/dk-laosiji/pool
 ```
 
 # Usage
@@ -44,7 +42,7 @@ defer conn.Close()
 // cc := conn.Value()
 // client := pb.NewClient(conn.Value())
 ```
-See the complete example: [https://github.com/shimingyah/pool/tree/master/example](https://github.com/shimingyah/pool/tree/master/example)
+See the complete example: [https://github.com/dk-laosiji/pool/tree/master/example](https://github.com/dk-laosiji/pool/tree/master/example)
 
 # Reference 
 * [https://github.com/fatih/pool](https://github.com/fatih/pool)
