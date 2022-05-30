@@ -63,6 +63,9 @@ type pool struct {
 	// the server address is to create connection.
 	address string
 
+	// closed set true when Close is called.
+	closed int32
+
 	// control the atomic var current's concurrent read write.
 	sync.RWMutex
 }
@@ -89,6 +92,7 @@ func New(address string, option Options) (Pool, error) {
 		opt:     option,
 		conns:   make([]*conn, option.MaxActive),
 		address: address,
+		closed:  0,
 	}
 
 	for i := 0; i < p.opt.MaxIdle; i++ {
@@ -114,7 +118,7 @@ func (p *pool) incrRef() int32 {
 
 func (p *pool) decrRef() {
 	newRef := atomic.AddInt32(&p.ref, -1)
-	if newRef < 0 {
+	if newRef < 0 && atomic.LoadInt32(&p.closed) == 0 {
 		panic(fmt.Sprintf("negative ref: %d", newRef))
 	}
 	if newRef == 0 && atomic.LoadInt32(&p.current) > int32(p.opt.MaxIdle) {
@@ -207,6 +211,7 @@ func (p *pool) Get() (Conn, error) {
 
 // Close see Pool interface.
 func (p *pool) Close() error {
+	atomic.StoreInt32(&p.closed, 1)
 	atomic.StoreUint32(&p.index, 0)
 	atomic.StoreInt32(&p.current, 0)
 	atomic.StoreInt32(&p.ref, 0)

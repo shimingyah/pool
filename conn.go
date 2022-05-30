@@ -52,7 +52,6 @@ func (c *conn) Close() error {
 func (c *conn) reset() error {
 	cc := c.cc
 	c.cc = nil
-	c.pool = nil
 	c.once = false
 	if cc != nil {
 		return cc.Close()
