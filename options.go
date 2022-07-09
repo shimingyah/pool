@@ -98,12 +98,12 @@ func Dial(address string) (*grpc.ClientConn, error) {
 			Time:                KeepAliveTime,
 			Timeout:             KeepAliveTimeout,
 			PermitWithoutStream: true,
-		}))
+		}))， nil
 }
 
 // DialTest return a simple grpc connection with defined configurations.
 func DialTest(address string) (*grpc.ClientConn, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), DialTimeout)
 	defer cancel()
-	return grpc.DialContext(ctx, address, grpc.WithInsecure())
+	return grpc.DialContext(ctx, address, grpc.WithInsecure()), nil
 }
